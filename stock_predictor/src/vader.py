@@ -1,10 +1,14 @@
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+# vader_sentiment.py
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-def vader_sentiment(text):
-    analyzer = SentimentIntensityAnalyzer()
-    return analyzer.polarity_scores(text)['compound']
+# Ensure lexicon is available
+nltk.download("vader_lexicon")
 
-if __name__ == "__main__":
-    sample_text = "The market sentiment is extremely positive!"
-    score = vader_sentiment(sample_text)
-    print(f"VADER Sentiment Score: {score}")
+def vader_sentiment_analysis(texts):
+    sia = SentimentIntensityAnalyzer()
+    results = []
+    for text in texts:
+        score = sia.polarity_scores(text)["compound"]
+        results.append(score)
+    return results
