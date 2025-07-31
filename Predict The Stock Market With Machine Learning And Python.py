@@ -25,12 +25,13 @@ import torch                                                                    
 import warnings                                                                         # For handling warnings
 warnings.simplefilter(action="ignore", category=FutureWarning)                          # Ignore warnings for cleaner output
 headlines = []                                                                          # Define globally in case both sources fail
+import feedparser                                                                      # For parsing RSS feeds (not used in this script but can be useful for future enhancements)
 # import pkg_resources                                                                    # For checking package versions (not used in this script but can be useful for future enhancements)
 
 # ------------------------------ INITIAL SETUP ------------------------------ #
 # Downloading NLTK resources
 nltk.download("vader_lexicon")                                          # Downloading VADER lexicon for sentiment analysis (not used in this script but can be useful for future enhancements)
-# nltk.download("pysentimento")                                           # Downloading PySentimiento for sentiment analysis (not used in this script but can be useful for future enhancements)
+nltk.download("pysentimento")                                           # Downloading PySentimiento for sentiment analysis (not used in this script but can be useful for future enhancements)
 sia = SentimentIntensityAnalyzer()
 
 # ------------------------------ DATA SETUP ------------------------------ #
@@ -282,78 +283,145 @@ model = AutoModelForSequenceClassification.from_pretrained(model_name)
 # Create a pipeline
 sentiment_pipe = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
 
-# Ensure headlines is defined
-headlines = headlines if 'headlines' in locals() else []
+# ------------------------------ Step 1: Try yFinance ------------------------------ #
+print("📰 Attempting to fetch headlines from yFinance...")
+headlines = []
+filtered_news = []
 
-# # Sample news headlines
-headlines = [
-    "Tata Motors reports record profits for Q1",
-    "New electric vehicle lineup unveiled by Tata Motors",
-    "Tata Motors stock drops after global chip shortage warning",
-    "Strong sales boost Tata Motors’ revenue",
-    "Tata Motors invests in EV battery production"
-]
+try:
+    stock = yf.Ticker("TATAMOTORS.NS")
+    news = stock.news
 
-# 📰 Fallback: scrape Economic Times if yfinance shows no news
+    # 🗓️ Define your date range
+    start_date = datetime.strptime("2025-07-18", "%Y-%m-%d")
+    end_date = datetime.strptime("2025-08-01", "%Y-%m-%d")
+
+    # 🧹 Filter news articles by timestamp
+    for article in news:
+        pub_time = article.get("providerPublishTime")
+        if pub_time:
+            pub_date = datetime.utcfromtimestamp(pub_time)
+            if start_date <= pub_date <= end_date:
+                title = article.get("title")
+                if title:
+                    filtered_news.append(article)
+                    headlines.append(title)
+
+    print(f"✅ Filtered to {len(headlines)} headlines from yFinance within date range.")
+    news = filtered_news  # Ensure the filtered list is used downstream
+
+except Exception as e:
+    print(f"⚠️ yFinance failed: {e}")
+
+# ------------------------------ Step 2: Fallback to Economic Times ------------------------------ #
 if not headlines:
-    print("No news via yfinance — scraping Economic Times instead.")
+    print("🔁 No news via yFinance — scraping Economic Times...")
     try:
         url = "https://economictimes.indiatimes.com/topic/Tata-Motors"
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(res.text, "html.parser")
-
-        # Find article titles under proper containers (ET often uses .eachStory or .content)
         articles = soup.select(".tabdata .eachStory")
-        headlines = []
-
         for article in articles:
             title = article.find("h3")
             if title:
                 headlines.append(title.get_text(strip=True))
             if len(headlines) >= 5:
                 break
-
         if headlines:
-            print(f"✅ Scraped {len(headlines)} valid headlines from Economic Times:")
-            for h in headlines:
-                print("→", h)
+            print(f"✅ Scraped {len(headlines)} valid headlines from Economic Times.")
         else:
-            print("⚠️ Still no valid headlines found. Check page structure or try a different source.")
+            print("⚠️ No headlines found on Economic Times.")
     except Exception as e:
-        print(f"❌ Scraping failed: {e}")
+        print(f"❌ Economic Times scraping failed: {e}")
+
+# ------------------------------ Step 3: Fallback to Google News RSS ------------------------------ #
+def fetch_google_news_rss(query="Tata Motors"):
+    query = query.replace(" ", "+")
+    url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+    feed = feedparser.parse(url)
+    return [entry.title for entry in feed.entries]
+
+if not headlines:
+    print("🔁 Trying fallback: Google News RSS...")
+    try:
+        headlines = fetch_google_news_rss("Tata Motors")
+        if headlines:
+            print(f"✅ Found {len(headlines)} headlines from Google News RSS.")
+        else:
+            print("⚠️ Google News RSS returned no headlines.")
+    except Exception as e:
+        print(f"❌ Google News RSS failed: {e}")
         headlines = []
 
-# Proceed only if we have headlines
+# ------------------------------ Step 4: Sentiment Analysis ------------------------------ #
 if headlines:
-    # Define aspects to track
     aspects = ["profit", "sales", "EV", "electric vehicle", "revenue", "investment", "emission", "partnership", "loss"]
-
-    # Analyze aspect-level sentiment
     aspect_sentiment_results = []
+    label_map = {"LABEL_0": "Negative", "LABEL_1": "Neutral", "LABEL_2": "Positive"}
+
     for hl in headlines:
         for asp in aspects:
             if asp.lower() in hl.lower():
                 sentiment = sentiment_pipe(hl)[0]
+                sentiment_label = label_map.get(sentiment['label'], sentiment['label'])
+                
                 aspect_sentiment_results.append({
                     "headline": hl,
                     "aspect": asp,
-                    "label": sentiment['label'],
+                    "label": sentiment_label,
                     "score": sentiment['score']
                 })
+                break  # Stop after first matched aspect
 
-    # Convert to DataFrame and display
+
+# ------------------------ AGGREGATED SENTIMENT ------------------------ #
+    # Convert to DataFrame
+    df_sentiment = pd.DataFrame(aspect_sentiment_results)
+
+    # Map labels to scores
+    sentiment_score_map = {"Negative": -1, "Neutral": 0, "Positive": 1}
+    df_sentiment.rename(columns={'label': 'Sentiment'}, inplace=True)
+    df_sentiment['SentimentScore'] = df_sentiment['Sentiment'].map(sentiment_score_map)
+
+
+    # Group by aspect
+    df_sentiment.rename(columns={'aspect': 'Aspect'}, inplace=True)
+    aggregated_sentiment = df_sentiment.groupby('Aspect')['SentimentScore'].agg(['mean', 'count']).reset_index()
+    aggregated_sentiment.rename(columns={'mean': 'AvgSentimentScore', 'count': 'MentionCount'}, inplace=True)
+
+    # Show result
+    print("\n📊 Aggregated Sentiment Scores:")
+    print(aggregated_sentiment)
+
+    # Optional: export
+    aggregated_sentiment.to_csv("tatamotors_aggregated_sentiment.csv", index=False)
+    print("📄 Exported aggregated sentiment to tatamotors_aggregated_sentiment.csv")
+
     aspect_df = pd.DataFrame(aspect_sentiment_results)
     print("\n🧠 Aspect-Level Sentiment Analysis Results:")
-    print(aspect_df)
+    print(aspect_df.head(10))  # Show only top 10 entries
 
-    # Export results
+    # Export
     aspect_df.to_csv("aspect_sentiment_results.csv", index=False)
     aspect_df.to_excel("aspect_sentiment_results.xlsx", index=False)
     print("📄 Exported to aspect_sentiment_results.csv and .xlsx")
+    
 else:
-    print("⚠️ No headlines available for aspect-level sentiment analysis.")
+    print("⚠️ No headlines available for sentiment analysis.")
 
-# Quick Summary
+# ------------------------------ Optional Summary ------------------------------ #
 print("\n📈 Model Summary:")
-print("Baseline Features  → Precision:", round(precision, 3))
-print("Engineered Features → Precision:", round(precision_score(predictions["Target"], predictions["Predictions"]), 3))
+try:
+    if 'precision' in globals():
+        print("Baseline Features  → Precision:", round(precision, 3))
+
+except:
+    print("Baseline precision not available.")
+
+try:
+    print("Engineered Features → Precision:", round(precision_score(predictions['Target'], predictions['Predictions']), 3))
+except:
+    print("Engineered precision not available.")
+
+# ------------------------------ END OF SCRIPT ------------------------------ #
+print("\n✅ Script completed successfully!")
