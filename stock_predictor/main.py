@@ -1,3 +1,5 @@
+# main.py
+
 import sys
 import os
 import warnings
@@ -65,8 +67,10 @@ def main():
     df, feature_cols = add_rolling_features(df, horizons=HORIZONS)
 
     # Improved model
-    model, predict_fn = train_model(df, feature_cols)
-    predictions = backtest(df, model, feature_cols, predict_fn=predict_fn)
+    predict_fn, model = train_model(df, feature_cols)
+    # predictions = backtest(df, model, feature_cols, predict_fn=predict_fn)
+    predictions = backtest(df, model, feature_cols)
+
 
     print("\n✅ Prediction Summary:")
     print(predictions["Predictions"].value_counts())
