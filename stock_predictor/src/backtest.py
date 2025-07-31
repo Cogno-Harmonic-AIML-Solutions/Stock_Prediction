@@ -1,4 +1,4 @@
-# stock_predictor/src/backtesting.py
+# stock_predictor/src/backtest.py
 
 import pandas as pd
 from sklearn.metrics import precision_score

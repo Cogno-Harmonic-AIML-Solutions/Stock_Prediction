@@ -1,4 +1,4 @@
-# vader_sentiment.py
+# vader.py
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
